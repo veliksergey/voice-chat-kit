@@ -1,4 +1,4 @@
-# Project plan: voice chat with Claude, switchable STT/TTS providers
+# voice-chat-kit — project plan: voice chat with Claude, switchable STT/TTS providers
 
 Status: draft for review (2026-10-15). Research behind every vendor claim is in
 [research-2026-10-15.md](research-2026-10-15.md); items that could not be confirmed from a
@@ -41,13 +41,13 @@ v1 scope (agreed with the user on 2026-10-15):
 | D2 | Push-to-talk with live transcript; batch-only providers fall back to record-then-transcribe | User choice; avoids VAD/echo complexity while still feeling live | User |
 | D3 | pnpm monorepo: publishable packages + demo app | User choice; "simple for developers to use it, maybe create a package" | User |
 | D4 | STT v1 = Web Speech API + Deepgram Nova-3 | User choice. Web Speech: zero setup, free, streaming interims. Deepgram: low-cost paid streaming ($0.0048/min, about $0.29/hr; AssemblyAI's `universal-streaming` is cheaper at $0.15/hr and is the phase-2 candidate), $200 free credit, mature SDK v5, browser connects directly with a short-lived JWT | User; research §1a |
-| D5 | TTS v1 = Web Speech `speechSynthesis` + Deepgram Aura-2 | Mirrors D4: one free, one paid. Aura-2 reuses the Deepgram key, credit, and `/v1/auth/grant` token flow, so the paid path needs one vendor account. ElevenLabs (most popular) and Cartesia (best free tier) are phase 2 | Claude recommendation, **open for user override** |
+| D5 | TTS v1 = Web Speech `speechSynthesis` + Deepgram Aura-2 | Mirrors D4: one free, one paid. Aura-2 reuses the Deepgram key, credit, and `/v1/auth/grant` token flow, so the paid path needs one vendor account. ElevenLabs (most popular) and Cartesia (best free tier) are phase 2 | Claude recommendation, confirmed by the user 2026-10-15 |
 | D6 | Claude via `@anthropic-ai/sdk` (0.134), model `claude-opus-5-5`, streaming, `output_config.effort: "low"` by default, system prompt cached with `cache_control`, server-side refusal fallbacks (`fallbacks: "default"`) enabled by default | Skill defaults; low effort for conversational latency; fallbacks keep the chat going when a safety classifier declines. Model and effort configurable via env | `claude-api` skill, 2026-10-06 cache |
 | D7 | Backend = Hono 4.13 on `@hono/node-server`; package handlers are Web-standard `Request -> Response` so they also mount in Express/Fastify/Bun | Built-in SSE + WebSocket helpers, TypeScript-first; handlers stay framework-agnostic for package users | Research §C |
 | D8 | No database in v1. Client sends full message history each turn; server is stateless. `ConversationStore` interface defined in core for the Mongo phase | Smallest cohesive v1; the Claude API is stateless anyway | — |
 | D9 | Tooling: Node 24 LTS for development and CI (tsdown 0.23 builds only on `^22.18.0 \|\| ^24.11.0 \|\| >=26.0.0`, checked 2026-10-15; the published packages declare `engines.node: ">=22.18"`), pnpm 12 pinned via `packageManager`, TypeScript 7 (fallback 6.x if a tool lags), Vite 8, React 19, Biome 2, Vitest 5, tsdown for library builds | Current stable versions; tsup is officially unmaintained | Research §C; tsdown.dev/guide/getting-started |
 | D10 | API keys live only on the server. Browser-direct providers (Deepgram) get a short-lived token minted by the server; everything else is proxied | Security invariant: never ship vendor keys to the client | AGENTS.md invariants |
-| D11 | Package scope placeholder `@scope/voice-chat-*` until the user names one; license MIT assumed | Unknown | **Open question** |
+| D11 | Repository and npm scope `voice-chat-kit`: `@voice-chat-kit/core`, `/providers`, `/react`, `/server`; license MIT; model and effort configured server-side only (read-only in the demo UI) | User choices 2026-10-15. GitHub repo `veliksergey/voice-chat-kit` exists; the unscoped name `voice-chat-kit` was free on npm that day (the npm org still has to be created before the Phase 4 publish dry-run) | User |
 
 ## 3. Target developer experience
 
@@ -55,7 +55,7 @@ This is the bar the packages must meet. Server side (any Web-standard framework;
 
 ```ts
 import { Hono } from "hono";
-import { createVoiceChatHandlers, deepgramTokenIssuer } from "@scope/voice-chat-server";
+import { createVoiceChatHandlers, deepgramTokenIssuer } from "@voice-chat-kit/server";
 
 const voice = createVoiceChatHandlers({
   anthropic: { apiKey: process.env.ANTHROPIC_API_KEY!, model: "claude-opus-5-5" },
@@ -75,9 +75,9 @@ app.get("/api/providers", (c) => voice.providers(c.req.raw));    // which provid
 Client side:
 
 ```tsx
-import { useVoiceChat } from "@scope/voice-chat-react";
-import { deepgramStt, webSpeechStt } from "@scope/voice-chat-providers/stt";
-import { deepgramTts, webSpeechTts } from "@scope/voice-chat-providers/tts";
+import { useVoiceChat } from "@voice-chat-kit/react";
+import { deepgramStt, webSpeechStt } from "@voice-chat-kit/providers/stt";
+import { deepgramTts, webSpeechTts } from "@voice-chat-kit/providers/tts";
 
 const chat = useVoiceChat({
   baseUrl: "/api",
@@ -174,15 +174,15 @@ speaking -> idle`, with `cancel` allowed from any state and `error` as a termina
 ## 5. Package layout and interfaces
 
 ```
-text-to-voice-to-claude/
+voice-chat-kit/
 ├─ apps/
-│  ├─ web/          Vite 8 + React 19 demo: provider switchers, PTT button, transcript, chat log
+│  ├─ web/          Vite 8 + React 19 demo: provider switchers, PTT button, transcript, chat log; model/effort shown read-only
 │  └─ server/       Hono app mounting the package handlers; .env.example
 ├─ packages/
-│  ├─ core/         @scope/voice-chat-core      interfaces, state machine, sentence chunker, SSE client; no vendor deps
-│  ├─ providers/    @scope/voice-chat-providers subpath exports: ./stt, ./tts (web-speech, deepgram); @deepgram/sdk is an optional peer dep
-│  ├─ react/        @scope/voice-chat-react     useVoiceChat, useStt, useTts
-│  └─ server/       @scope/voice-chat-server    createVoiceChatHandlers (Request -> Response), Claude client wrapper, token minting
+│  ├─ core/         @voice-chat-kit/core        interfaces, state machine, sentence chunker, SSE client; no vendor deps
+│  ├─ providers/    @voice-chat-kit/providers   subpath exports: ./stt, ./tts (web-speech, deepgram); @deepgram/sdk is an optional peer dep
+│  ├─ react/        @voice-chat-kit/react       useVoiceChat, useStt, useTts
+│  └─ server/       @voice-chat-kit/server      createVoiceChatHandlers (Request -> Response), Claude client wrapper, token minting
 ├─ docs/            plan, research, reviews/decisions.md, "add a provider" guide
 ├─ AGENTS.md        repo facts and the check commands
 ├─ pnpm-workspace.yaml  package.json  tsconfig.base.json  biome.json  .env.example
@@ -338,15 +338,16 @@ work starts. Each phase goes through the Codex review loop before the next begin
 | Local toolchain is Node 22.14 / pnpm 11.17; Node 22.14 is outside tsdown's build range (`^22.18.0 \|\| ^24.11.0 \|\| >=26.0.0`) | Phase 0 cannot build until Node is upgraded | Upgrade to Node 24 LTS as the first Phase 0 step; `engines` + `packageManager` fields fail fast on the wrong versions; CI runs on Node 24 and smoke-loads the built packages on Node 22.18 |
 | Deepgram grant-token scopes and whether one JWT serves both `/listen` and `/speak` | Token endpoint design | Verify against the docs during phase 2 (research says yes, with the token sent as a WebSocket subprotocol) |
 | `fallbacks: "default"` is a beta parameter | Could change | Behind a config flag; default on per the Claude skill guidance |
-| Package names/scope unknown | Rename churn | Placeholder scope; rename once before phase 4 |
 
-## 10. Open questions for the user
+## 10. Open questions — resolved 2026-10-15
 
-1. npm scope and package names (placeholder `@scope/voice-chat-*`). Public or private registry?
-2. TTS paid vendor: keep Deepgram Aura-2 (D5) or use ElevenLabs in v1?
-3. License: MIT assumed.
-4. Deploy target: local development only is assumed for v1.
-5. Should the demo expose model/effort selection in the UI, or keep them server-side env only?
+1. npm scope `@voice-chat-kit/*`, public registry (org to be created before the Phase 4 publish dry-run). Repository: `github.com/veliksergey/voice-chat-kit`.
+2. Paid TTS in v1: Deepgram Aura-2 (D5 confirmed).
+3. License: MIT.
+4. Deploy target: local development only for v1 (assumption, not contested).
+5. Model and effort: server env only; the demo UI shows them read-only.
+
+None remain open.
 
 ## 11. v1 acceptance criteria (testable)
 

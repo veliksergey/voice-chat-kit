@@ -1,0 +1,43 @@
+{
+  "name": "@voice-chat-kit/server",
+  "version": "0.0.1",
+  "description": "Web-standard Request -> Response handlers for voice-chat-kit: Claude chat stream and provider token minting",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "access": "public",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "./package.json": "./package.json"
+    }
+  },
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/veliksergey/voice-chat-kit.git",
+    "directory": "packages/server"
+  },
+  "engines": {
+    "node": ">=22.18"
+  }
+}

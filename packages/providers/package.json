@@ -1,0 +1,48 @@
+{
+  "name": "@voice-chat-kit/providers",
+  "version": "0.0.1",
+  "description": "Speech-to-text and text-to-speech provider adapters for voice-chat-kit",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    "./stt": {
+      "types": "./src/stt/index.ts",
+      "default": "./src/stt/index.ts"
+    },
+    "./tts": {
+      "types": "./src/tts/index.ts",
+      "default": "./src/tts/index.ts"
+    },
+    "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "access": "public",
+    "exports": {
+      "./stt": {
+        "types": "./dist/stt.d.ts",
+        "default": "./dist/stt.js"
+      },
+      "./tts": {
+        "types": "./dist/tts.d.ts",
+        "default": "./dist/tts.js"
+      },
+      "./package.json": "./package.json"
+    }
+  },
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/veliksergey/voice-chat-kit.git",
+    "directory": "packages/providers"
+  },
+  "engines": {
+    "node": ">=22.18"
+  }
+}

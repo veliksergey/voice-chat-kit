@@ -1,0 +1,40 @@
+{
+  "name": "@voice-chat-kit/core",
+  "version": "0.0.1",
+  "description": "Provider-agnostic interfaces and session logic for voice chat with Claude",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "access": "public",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "./package.json": "./package.json"
+    }
+  },
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/veliksergey/voice-chat-kit.git",
+    "directory": "packages/core"
+  },
+  "engines": {
+    "node": ">=22.18"
+  }
+}

@@ -1,3 +1,21 @@
-// Phase 0 placeholder: proves the build, typecheck, and test pipeline.
-// The provider interfaces and session state machine arrive in Phase 1 (docs/plan.md §5).
 export const PACKAGE_NAME = "@voice-chat-kit/core";
+
+export { SentenceChunker } from "./chunker.js";
+export {
+  buildHistoryWindow,
+  DEFAULT_HISTORY_WINDOW,
+  dropOldestTurns,
+  type HistoryWindowOptions,
+  historyByteLength,
+} from "./history.js";
+export {
+  canTransition,
+  InvalidTransitionError,
+  SESSION_EVENTS,
+  SESSION_STATES,
+  type SessionEvent,
+  type SessionState,
+  transition,
+} from "./session.js";
+export { parseChatEvent, parseSse, type SseFrame, SseFrameParser } from "./sse.js";
+export type * from "./types.js";

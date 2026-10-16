@@ -9,20 +9,37 @@ A pnpm monorepo for voice chat with Claude where speech-to-text (STT) and text-t
 providers are swapped by configuration. Design, decisions, phases, and acceptance criteria:
 `docs/plan.md`. Vendor research with dated sources: `docs/research-2026-10-15.md`.
 
-Current phase: **0 — scaffold**. Packages export placeholders only; see the plan for what each
-later phase adds.
+Current phase: **1 — core + text chat**. Typed text streams a Claude reply end to end; the
+`providers` package is still a placeholder (speech arrives in Phases 2–3).
 
 ## Layout
 
 ```
-apps/web            @voice-chat-kit/web-demo     Vite 8 + React 19 demo (private)
-apps/server         @voice-chat-kit/server-demo  Hono app on @hono/node-server (private)
-packages/core       @voice-chat-kit/core         interfaces, state machine, chunker (publishable)
-packages/providers  @voice-chat-kit/providers    subpath exports ./stt and ./tts (publishable)
-packages/react      @voice-chat-kit/react        React hooks (publishable)
-packages/server     @voice-chat-kit/server       Request -> Response handlers (publishable)
+apps/web            @voice-chat-kit/web-demo     Vite 8 + React 19 demo (private); /api proxied to :3000
+apps/server         @voice-chat-kit/server-demo  Hono app on @hono/node-server (private); config.ts reads env
+packages/core       @voice-chat-kit/core         types, session machine, chunker, SSE parser, history window (publishable)
+packages/providers  @voice-chat-kit/providers    subpath exports ./stt and ./tts (publishable, placeholder)
+packages/react      @voice-chat-kit/react        useVoiceChat (publishable)
+packages/server     @voice-chat-kit/server       createVoiceChatHandlers: validate, Claude stream, tokens (publishable)
 docs/               plan, research, reviews/decisions.md
 ```
+
+## Chat contract (Phase 1)
+
+- `POST /api/chat` body `{ messages: [{ role: "user" | "assistant", content }] }`, validated by
+  Zod in `packages/server/src/validate.ts` (limits in `DEFAULT_LIMITS`); `400` with a reason.
+  `Content-Type` must be `application/json` (`415` otherwise) and `apps/server` rejects any
+  `Origin` other than `CORS_ORIGIN` with `403` before dispatch: CORS headers alone do not stop a
+  cross-site "simple" POST from reaching a billable endpoint.
+- On a `400` the client retries once with the oldest half of the turns dropped
+  (`dropOldestTurns` in core), then surfaces the error; `newConversation()` clears the transcript.
+- Response is `text/event-stream` with events `text`, `fallback`, `done`, `refusal`, `error`;
+  the typed shape is `ChatEvent` in `packages/core/src/types.ts`, encoded by
+  `packages/server/src/sse.ts` and decoded by `parseChatEvent` in core.
+- The client sends `buildHistoryWindow(...)` (core), never the full transcript; the server
+  supplies `system`, `model`, `effort`, `max_tokens` from its own config only.
+- A terminal refusal removes the refused turn (user + partial reply) from replay history; a
+  fallback-rescued decline continues the same stream.
 
 ## Toolchain
 
@@ -44,6 +61,8 @@ docs/               plan, research, reviews/decisions.md
 | `pnpm build` | tsdown / Vite builds into each `dist/` | yes |
 | `pnpm check` | all four in order | yes |
 | `pnpm format` | `biome format --write .` | — |
+| `pnpm dev` | apps/server (tsdown watch + node) and Vite, in parallel | — |
+| `LIVE_TESTS=1 pnpm test` | adds one real Claude turn; needs credentials; skipped whenever `CI` is set | — |
 
 There is no CI workflow yet (planned for Phase 4); the checks above are the gate.
 
@@ -78,5 +97,11 @@ not raised again. Review logs and task files live outside the repository under
 
 ## Environment variables
 
-See `.env.example`: `ANTHROPIC_API_KEY` (Phase 1+), `DEEPGRAM_API_KEY` (Phase 2+), `PORT`,
-`CORS_ORIGIN`.
+`.env` lives at the repository root (template: `.env.example`); `apps/server` loads it from its
+own directory or two levels up. Variables: `ANTHROPIC_API_KEY` (or an `ant auth login`
+profile), `VOICE_CHAT_MODEL`, `VOICE_CHAT_EFFORT`, `VOICE_CHAT_MAX_TOKENS`,
+`VOICE_CHAT_SYSTEM_PROMPT`, `DEEPGRAM_API_KEY` (Phase 2+), `HOST` (default `127.0.0.1`:
+`/api/chat` spends Claude credits and v1 has no auth, so the server binds loopback unless told
+otherwise), `PORT`, `CORS_ORIGIN`. Blank values in `.env` count as unset. The `VOICE_CHAT_`
+prefix is deliberate: Claude Code exports `CLAUDE_EFFORT` into every shell it runs, so
+`CLAUDE_*` names would be overridden silently.

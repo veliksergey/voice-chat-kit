@@ -137,8 +137,9 @@ Data flow for one turn:
 3. The hook appends the user message and `POST`s a bounded window of the history to
    `/api/chat`. The window is built deterministically so it always satisfies the server limits
    in section 8, without assuming anything about how many characters a token can hold:
-   1. Per-message cap: a message longer than 8,000 characters is sent truncated to 8,000 with a
-      trailing `…` marker; the full text stays in the UI transcript. This covers long
+   1. Per-message cap: a message longer than 8,000 characters is sent truncated so that the text
+      plus a trailing `…` marker is exactly 8,000 characters; the full text stays in the UI
+      transcript. This covers long
       transcripts and long replies alike. `max_tokens` bounds tokens, not characters, so it is
       not relied on for size.
    2. Count cap: while the window holds more than 20 messages, drop the oldest 10 at once, not

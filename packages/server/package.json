@@ -39,5 +39,10 @@
   },
   "engines": {
     "node": ">=22.18"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.134.0",
+    "@voice-chat-kit/core": "workspace:*",
+    "zod": "^4.6.7"
   }
 }

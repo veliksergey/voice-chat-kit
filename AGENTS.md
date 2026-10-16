@@ -9,9 +9,10 @@ A pnpm monorepo for voice chat with Claude where speech-to-text (STT) and text-t
 providers are swapped by configuration. Design, decisions, phases, and acceptance criteria:
 `docs/plan.md`. Vendor research with dated sources: `docs/research-2026-10-15.md`.
 
-Current phase: **2 — speech-to-text**. Push-to-talk with Web Speech API or Deepgram Nova-3
-streams a live transcript, then Claude's reply; text input still works. Text-to-speech arrives
-in Phase 3 (`./tts` is still a placeholder).
+Current phase: **3 — full voice loop**. Push-to-talk with Web Speech API or Deepgram Nova-3
+streams a live transcript, Claude's reply streams as text and is spoken sentence by sentence by
+Web Speech synthesis or Deepgram Aura-2; text input still works. Later phases: docs/publishing,
+Mongo, more vendors.
 
 ## Layout
 
@@ -19,7 +20,7 @@ in Phase 3 (`./tts` is still a placeholder).
 apps/web            @voice-chat-kit/web-demo     Vite 8 + React 19 demo (private); /api proxied to :3000
 apps/server         @voice-chat-kit/server-demo  Hono app on @hono/node-server (private); config.ts reads env
 packages/core       @voice-chat-kit/core         types, session machine, chunker, SSE parser, history window (publishable)
-packages/providers  @voice-chat-kit/providers    ./stt: webSpeechStt, deepgramStt; ./tts: placeholder (publishable)
+packages/providers  @voice-chat-kit/providers    ./stt: webSpeechStt, deepgramStt; ./tts: webSpeechTts, deepgramTts (publishable)
 packages/react      @voice-chat-kit/react        useVoiceChat (publishable)
 packages/server     @voice-chat-kit/server       createVoiceChatHandlers: validate, Claude stream, tokens (publishable)
 docs/               plan, research, reviews/decisions.md
@@ -71,6 +72,52 @@ docs/               plan, research, reviews/decisions.md
   session is held (never after a reported error) and accumulates finals across runs.
 - Pointer hold-to-talk (`apps/web/src/usePointerHold.ts`): `pointerup`/`leave`/`cancel` act only on
   a press the pointer started, so they cannot end a Space-held recording.
+
+## Text-to-speech (Phase 3)
+
+- Adapters implement `TtsProvider` from core (`speak(sentences, { voice, getToken, signal,
+  onStart, onEnd })`) and live in `packages/providers/src/tts/`. `GetToken` (STT and TTS) takes
+  an optional `AbortSignal`; the hook passes it to the token `fetch`, and the Deepgram adapters
+  race the token wait against abort so Stop works even while the token request is stalled. The hook feeds them a
+  `SentenceStream` (core): reply deltas go through the `SentenceChunker` and complete sentences
+  are spoken while the reply is still streaming; `end()` flushes the remainder, `cancel()` drops
+  what has not been spoken.
+- `webSpeechTts()`: one `SpeechSynthesisUtterance` per sentence via `speechSynthesis`; abort maps
+  to `speechSynthesis.cancel()`; `interrupted`/`canceled` are cancellations, other errors reject.
+  Chromium's `cancel()` fires no event for utterances that never started, so on abort the adapter
+  settles completion itself instead of waiting for the browser.
+- `deepgramTts()`: browser WebSocket to `wss://api.deepgram.com/v1/speak?model=<aura voice>&encoding=linear16&sample_rate=24000`
+  with the same 60 s JWT as STT as the `["bearer", <jwt>]` subprotocol (Deepgram's token page
+  lists the `/speak` WebSocket among the APIs that accept temporary tokens). Per sentence it sends
+  `{"type":"Speak","text":…}` then `{"type":"Flush"}`; after the last sentence `{"type":"Close"}`.
+  A sentence over 2,000 characters (Deepgram's documented payload cap) is split at a space into
+  several `Speak` messages under that one `Flush`; the space stays with the preceding payload,
+  because Deepgram appends payloads to one text buffer and a dropped separator would run two
+  words together. Flushes are paced to Deepgram's limit of 20 per 60 s: past the budget the text
+  still goes out and one deferred `Flush` (or `Close`) covers it when the oldest flush leaves the
+  window; while a flush is deferred, the next sentence is sent with a leading space so the
+  buffered sentences stay apart. Text is paced to Deepgram's throughput cap of
+  2,400 characters per minute: a `Speak` part that would overflow the window waits (abortably)
+  until enough of the oldest characters age out; playback runs slower than that, so the wait
+  never starves the audio queue.
+  Binary frames are raw linear16 PCM, converted to Float32 and scheduled gaplessly on an
+  `AudioContext` created synchronously at `speak()` (still inside the user's gesture, before the
+  token and handshake waits; resumed if the browser created it suspended). A buffer starts when
+  the queued audio ends while that is still in the future; only the first buffer or an underrun
+  gets a 20 ms lead. Resolves when every `Flush` has been acknowledged by a `Flushed`, Deepgram
+  has closed the socket after `Close`, and the last buffer ended. A clean close with flushes
+  still unacknowledged, no close within `closeTimeoutMs` (10 s), any earlier close, `Error`, or
+  socket error rejects; abort stops every scheduled source and closes socket and context.
+- Hook flow: `thinking -> speaking` on the provider's `onStart`, `speaking -> idle` when speech
+  ends. `stop()` aborts speech and invalidates the in-flight turn, so a request whose body is
+  still open when the user barges cannot cancel the next turn's speech or flip the new session's
+  state when its abort error arrives later; a turn only ever cancels its own speech. `stop()`
+  also finalises the interrupted reply at once (kept if it has text, dropped if empty) so a turn
+  started right away replays what the user actually heard. A terminal
+  `refusal` or `error` cancels queued speech; pressing to talk or sending text while speaking
+  cancels speech first (barge by button); a TTS failure is a notice (`error` text) and never marks
+  the text turn failed, including a provider whose `speak()` throws synchronously (the call stays
+  synchronous so audio set-up remains inside the user's gesture).
 
 ## Toolchain
 

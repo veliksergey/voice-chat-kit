@@ -139,16 +139,19 @@ function harness(tokenGate?: Promise<void>) {
   const errors: string[] = [];
   const controller = new AbortController();
   let tokenRequests = 0;
+  let tokenSignal: AbortSignal | undefined;
   return {
     partials,
     finals,
     errors,
     controller,
     tokenRequests: () => tokenRequests,
+    tokenSignal: () => tokenSignal,
     options: {
       language: "en-US",
-      getToken: async () => {
+      getToken: async (signal?: AbortSignal) => {
         tokenRequests += 1;
+        tokenSignal = signal;
         if (tokenGate) await tokenGate;
         return { token: "jwt.secret", expiresAt: Date.now() + 60_000 };
       },
@@ -311,6 +314,7 @@ describe("deepgramStt", () => {
     await tick(); // mic acquired, token pending
     h.controller.abort();
     expect(tracksStopped).toBeGreaterThan(0);
+    expect(h.tokenSignal()?.aborted).toBe(true); // the token fetch itself is told to stop
     releaseToken?.();
     await expect(starting).rejects.toThrow(/cancelled/);
     expect(FakeWebSocket.instances).toHaveLength(0);

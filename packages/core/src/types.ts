@@ -47,7 +47,8 @@ export interface TokenInfo {
   expiresAt: number;
 }
 
-export type GetToken = () => Promise<TokenInfo>;
+/** Mints a short-lived provider token; honours `signal` so a stalled request can be cancelled. */
+export type GetToken = (signal?: AbortSignal) => Promise<TokenInfo>;
 
 /** Response of `GET /api/providers`: ids of token issuers registered on the server. */
 export interface ProvidersInfo {

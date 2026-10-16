@@ -2,17 +2,20 @@ import {
   buildHistoryWindow,
   type ChatMessage,
   type ChatUsage,
+  createSentenceStream,
   dropOldestTurns,
   type HistoryWindowOptions,
   parseChatEvent,
   parseSse,
   type RefusalInfo,
+  type SentenceStream,
   type SessionState,
   type SttProvider,
   type SttSession,
   type SttStartOptions,
   type TokenInfo,
   type TtsProvider,
+  type TtsSpeakOptions,
   transition,
   type WireMessage,
 } from "@voice-chat-kit/core";
@@ -23,8 +26,10 @@ export interface UseVoiceChatOptions {
   baseUrl: string;
   /** Speech-to-text provider for `startListening`/`stopListening`. */
   stt?: SttProvider;
-  /** Reserved for Phase 3 (text-to-speech). */
+  /** Text-to-speech provider; when set, replies are spoken sentence by sentence as they stream. */
   tts?: TtsProvider;
+  /** Voice passed to the TTS provider (provider-specific id). */
+  voice?: string;
   /** BCP-47 language passed to the STT provider. */
   language?: string;
   fetch?: typeof globalThis.fetch;
@@ -47,13 +52,15 @@ export interface UseVoiceChatResult {
   usage: ChatUsage | null;
   /** Id of the configured STT provider, or null when voice input is unavailable. */
   sttProviderId: string | null;
-  /** Sends typed text as a user turn and streams the reply. No-op while a turn is in flight. */
+  /** Id of the configured TTS provider, or null when replies are text only. */
+  ttsProviderId: string | null;
+  /** Sends typed text as a user turn and streams the reply. Cancels speech in progress first. */
   sendText(text: string): Promise<void>;
-  /** Push-to-talk press: starts the STT session (idle -> listening). */
+  /** Push-to-talk press: starts the STT session (idle -> listening). Cancels speech first. */
   startListening(): Promise<void>;
   /** Push-to-talk release: finalises the transcript and sends it as the user turn. */
   stopListening(): Promise<void>;
-  /** Aborts the in-flight turn or listening session; a partial reply stays, an empty one is dropped. */
+  /** Aborts the in-flight turn, speech, or listening session; a partial reply stays, an empty one is dropped. */
   stop(): void;
   /** Leaves the error state. */
   reset(): void;
@@ -74,6 +81,13 @@ interface Listening {
   cancelled: boolean;
 }
 
+/** Speech for one reply: the sentence feed and the abort handle for the provider. */
+interface Speaking {
+  stream: SentenceStream;
+  controller: AbortController;
+  done: Promise<void>;
+}
+
 let counter = 0;
 function newId(): string {
   counter += 1;
@@ -81,7 +95,7 @@ function newId(): string {
 }
 
 export function useVoiceChat(options: UseVoiceChatOptions): UseVoiceChatResult {
-  const { baseUrl, historyWindow, stt, language } = options;
+  const { baseUrl, historyWindow, stt, tts, voice, language } = options;
   const fetchImpl = options.fetch ?? globalThis.fetch;
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -97,6 +111,7 @@ export function useVoiceChat(options: UseVoiceChatOptions): UseVoiceChatResult {
   const stateRef = useRef<SessionState>("idle");
   const abortRef = useRef<AbortController | null>(null);
   const listeningRef = useRef<Listening | null>(null);
+  const speakingRef = useRef<Speaking | null>(null);
   // Monotonic turn counter: a request that outlives its turn must not touch the next one.
   const turnRef = useRef(0);
 
@@ -109,13 +124,22 @@ export function useVoiceChat(options: UseVoiceChatOptions): UseVoiceChatResult {
     setInterimTranscript("");
   }, []);
 
-  // Unmounting mid-reply or mid-listen must not leave requests or the microphone running.
+  const cancelSpeech = useCallback((): void => {
+    const active = speakingRef.current;
+    if (!active) return;
+    speakingRef.current = null;
+    active.stream.cancel();
+    active.controller.abort();
+  }, []);
+
+  // Unmounting mid-reply, mid-speech, or mid-listen must not leave anything running.
   useEffect(
     () => () => {
       abortRef.current?.abort();
+      cancelSpeech();
       cancelListening();
     },
-    [cancelListening],
+    [cancelListening, cancelSpeech],
   );
 
   const updateMessages = useCallback((update: (prev: ChatMessage[]) => ChatMessage[]) => {
@@ -146,6 +170,23 @@ export function useVoiceChat(options: UseVoiceChatOptions): UseVoiceChatResult {
     setLastRefusal(null);
     setLastFallback(null);
   }, []);
+
+  // Default token source for browser-direct providers: the server mints a short-lived token.
+  const getToken = useCallback(
+    async (providerId: string, signal?: AbortSignal): Promise<TokenInfo> => {
+      const response = await fetchImpl(`${baseUrl}/token/${encodeURIComponent(providerId)}`, {
+        method: "POST",
+        ...(signal ? { signal } : {}),
+      });
+      if (!response.ok) throw new Error(await describeHttpError(response));
+      const data = (await response.json()) as Partial<TokenInfo>;
+      if (typeof data.token !== "string" || typeof data.expiresAt !== "number") {
+        throw new Error("Invalid token response");
+      }
+      return { token: data.token, expiresAt: data.expiresAt };
+    },
+    [baseUrl, fetchImpl],
+  );
 
   // One Claude turn for `trimmed`; the caller has already moved the state to `thinking`.
   const runTurn = useCallback(
@@ -180,7 +221,47 @@ export function useVoiceChat(options: UseVoiceChatOptions): UseVoiceChatResult {
       const controller = new AbortController();
       abortRef.current = controller;
 
+      // Speech runs alongside the stream: sentences are fed as deltas complete them. A failure
+      // to speak is a notice, not a failed turn — the text reply is still complete.
+      let speaking: Speaking | null = null;
+      if (tts) {
+        const stream = createSentenceStream();
+        const speechController = new AbortController();
+        const speakOptions: TtsSpeakOptions = {
+          signal: speechController.signal,
+          onStart: () => {
+            if (isCurrentTurn() && current() === "thinking") go("SPEAK_STARTED");
+          },
+        };
+        if (voice) speakOptions.voice = voice;
+        if (tts.capabilities.needsToken) {
+          speakOptions.getToken = (signal) => getToken(tts.id, signal);
+        }
+        // The executor turns a synchronous throw from speak() into a rejection while keeping
+        // the call itself synchronous (audio set-up must stay inside the user's gesture).
+        const done = new Promise<void>((resolve) => resolve(tts.speak(stream, speakOptions))).then(
+          () => undefined,
+          (caught: unknown) => {
+            if (speechController.signal.aborted || !isCurrentTurn()) return;
+            setError(
+              `Speech failed: ${caught instanceof Error ? caught.message : "unknown error"}`,
+            );
+          },
+        );
+        speaking = { stream, controller: speechController, done };
+        speakingRef.current = speaking;
+      }
+
+      // Cancels only this turn's speech: a stale request must never silence a newer session.
+      const cancelOwnSpeech = (): void => {
+        if (!speaking) return;
+        speaking.stream.cancel();
+        speaking.controller.abort();
+        if (speakingRef.current === speaking) speakingRef.current = null;
+      };
+
       const fail = (message: string): void => {
+        cancelOwnSpeech();
         patch(userMessage.id, { status: "error" });
         patch(assistantMessage.id, { status: "error" });
         if (!isCurrentTurn()) return;
@@ -188,15 +269,8 @@ export function useVoiceChat(options: UseVoiceChatOptions): UseVoiceChatResult {
         if (current() !== "error") go("FAIL");
       };
 
-      // A reply that is still "streaming" when the turn ends is complete if it has text; an
-      // empty one is dropped, because replaying empty content would be rejected by the server.
       const settleAssistant = (): void => {
-        updateMessages((prev) =>
-          prev.flatMap((m) => {
-            if (m.id !== assistantMessage.id || m.status !== "streaming") return [m];
-            return m.text ? [{ ...m, status: "complete" as const }] : [];
-          }),
-        );
+        updateMessages((prev) => finalizeStreaming(prev, assistantMessage.id));
       };
 
       const post = (history: WireMessage[]): Promise<Response> =>
@@ -233,12 +307,15 @@ export function useVoiceChat(options: UseVoiceChatOptions): UseVoiceChatResult {
           switch (event.type) {
             case "text":
               patch(assistantMessage.id, (m) => ({ text: m.text + event.delta }));
+              speaking?.stream.push(event.delta);
               break;
             case "fallback":
               if (isCurrentTurn()) setLastFallback({ from: event.from, to: event.to });
               break;
             case "refusal":
               // Discard the refused turn from replay history; the transcript keeps it visible.
+              // Whatever was already queued for speech must not be spoken.
+              cancelOwnSpeech();
               patch(userMessage.id, { status: "refused" });
               patch(assistantMessage.id, { status: "refused" });
               if (isCurrentTurn()) {
@@ -248,6 +325,7 @@ export function useVoiceChat(options: UseVoiceChatOptions): UseVoiceChatResult {
               break;
             case "done":
               patch(assistantMessage.id, { status: "complete" });
+              speaking?.stream.end();
               if (isCurrentTurn()) setUsage(event.usage);
               terminal = true;
               break;
@@ -265,9 +343,18 @@ export function useVoiceChat(options: UseVoiceChatOptions): UseVoiceChatResult {
           return;
         }
         settleAssistant();
-        if (isCurrentTurn() && current() === "thinking") go("REPLY_DONE");
+        if (speaking && speakingRef.current === speaking) {
+          // Text is complete; wait for speech to finish (or be cancelled) before going idle.
+          await speaking.done;
+          if (speakingRef.current === speaking) speakingRef.current = null;
+        }
+        if (isCurrentTurn()) {
+          if (current() === "speaking") go("SPEAK_DONE");
+          else if (current() === "thinking") go("REPLY_DONE");
+        }
       } catch (caught) {
         if (controller.signal.aborted) {
+          cancelOwnSpeech();
           settleAssistant();
           if (isCurrentTurn() && current() !== "idle") go("CANCEL");
         } else {
@@ -277,36 +364,35 @@ export function useVoiceChat(options: UseVoiceChatOptions): UseVoiceChatResult {
         if (abortRef.current === controller) abortRef.current = null;
       }
     },
-    [baseUrl, current, fetchImpl, go, historyWindow, patch, updateMessages],
+    [baseUrl, current, fetchImpl, getToken, go, historyWindow, patch, tts, updateMessages, voice],
   );
+
+  const stop = useCallback((): void => {
+    // The in-flight turn is stale from here on: its late cleanup (the fetch catch, speech end)
+    // must not touch whatever the user starts next.
+    turnRef.current += 1;
+    abortRef.current?.abort();
+    cancelSpeech();
+    cancelListening();
+    // The interrupted reply is final now, so a turn started right after this one replays it
+    // instead of racing the old request's asynchronous cleanup.
+    updateMessages((prev) => finalizeStreaming(prev));
+    const s = current();
+    if (s !== "idle" && s !== "error") go("CANCEL");
+  }, [cancelListening, cancelSpeech, current, go, updateMessages]);
 
   const sendText = useCallback(
     async (text: string): Promise<void> => {
       const trimmed = text.trim();
       if (!trimmed) return;
+      if (current() === "speaking") stop(); // barge by button: typing over the spoken reply
       if (current() === "error") go("RESET");
       if (current() !== "idle") return;
       clearNotices();
       go("SEND_TEXT");
       await runTurn(trimmed);
     },
-    [clearNotices, current, go, runTurn],
-  );
-
-  // Default token source for browser-direct providers: the server mints a short-lived token.
-  const getToken = useCallback(
-    async (providerId: string): Promise<TokenInfo> => {
-      const response = await fetchImpl(`${baseUrl}/token/${encodeURIComponent(providerId)}`, {
-        method: "POST",
-      });
-      if (!response.ok) throw new Error(await describeHttpError(response));
-      const data = (await response.json()) as Partial<TokenInfo>;
-      if (typeof data.token !== "string" || typeof data.expiresAt !== "number") {
-        throw new Error("Invalid token response");
-      }
-      return { token: data.token, expiresAt: data.expiresAt };
-    },
-    [baseUrl, fetchImpl],
+    [clearNotices, current, go, runTurn, stop],
   );
 
   // Finalises one listening operation: stop the provider, then send the transcript. Results of
@@ -346,6 +432,7 @@ export function useVoiceChat(options: UseVoiceChatOptions): UseVoiceChatResult {
       setError("No speech-to-text provider configured");
       return;
     }
+    if (current() === "speaking") stop(); // barge by button: pressing to talk over the reply
     if (current() === "error") go("RESET");
     if (current() !== "idle") return;
     clearNotices();
@@ -380,7 +467,9 @@ export function useVoiceChat(options: UseVoiceChatOptions): UseVoiceChatResult {
       signal: active.controller.signal,
     };
     if (language) startOptions.language = language;
-    if (stt.capabilities.needsToken) startOptions.getToken = () => getToken(stt.id);
+    if (stt.capabilities.needsToken) {
+      startOptions.getToken = (signal) => getToken(stt.id, signal);
+    }
 
     try {
       const session = await stt.start(startOptions);
@@ -398,7 +487,7 @@ export function useVoiceChat(options: UseVoiceChatOptions): UseVoiceChatResult {
       setError(caught instanceof Error ? caught.message : "Could not start listening");
       if (current() === "listening") go("FAIL");
     }
-  }, [clearNotices, current, finishListening, getToken, go, language, stt]);
+  }, [clearNotices, current, finishListening, getToken, go, language, stop, stt]);
 
   const stopListening = useCallback(async (): Promise<void> => {
     const active = listeningRef.current;
@@ -411,12 +500,6 @@ export function useVoiceChat(options: UseVoiceChatOptions): UseVoiceChatResult {
     await finishListening(active);
   }, [current, finishListening]);
 
-  const stop = useCallback((): void => {
-    abortRef.current?.abort();
-    cancelListening();
-    if (current() === "listening" || current() === "transcribing") go("CANCEL");
-  }, [cancelListening, current, go]);
-
   const reset = useCallback((): void => {
     setError(null);
     if (current() === "error") go("RESET");
@@ -424,6 +507,7 @@ export function useVoiceChat(options: UseVoiceChatOptions): UseVoiceChatResult {
 
   const newConversation = useCallback((): void => {
     abortRef.current?.abort();
+    cancelSpeech();
     cancelListening();
     turnRef.current += 1; // any in-flight turn is now stale
     updateMessages(() => []);
@@ -431,7 +515,7 @@ export function useVoiceChat(options: UseVoiceChatOptions): UseVoiceChatResult {
     setUsage(null);
     if (current() === "error") go("RESET");
     else if (current() !== "idle") go("CANCEL");
-  }, [cancelListening, clearNotices, current, go, updateMessages]);
+  }, [cancelListening, cancelSpeech, clearNotices, current, go, updateMessages]);
 
   return {
     messages,
@@ -442,6 +526,7 @@ export function useVoiceChat(options: UseVoiceChatOptions): UseVoiceChatResult {
     lastFallback,
     usage,
     sttProviderId: stt?.id ?? null,
+    ttsProviderId: tts?.id ?? null,
     sendText,
     startListening,
     stopListening,
@@ -449,6 +534,15 @@ export function useVoiceChat(options: UseVoiceChatOptions): UseVoiceChatResult {
     reset,
     newConversation,
   };
+}
+
+// A reply still "streaming" when its turn ends is complete if it has text; an empty one is
+// dropped, because replaying empty content would be rejected by the server.
+function finalizeStreaming(messages: ChatMessage[], id?: string): ChatMessage[] {
+  return messages.flatMap((m) => {
+    if (m.status !== "streaming" || (id !== undefined && m.id !== id)) return [m];
+    return m.text ? [{ ...m, status: "complete" as const }] : [];
+  });
 }
 
 // Only completed, non-empty messages are replayed to Claude.

@@ -4,10 +4,11 @@ Voice chat with Claude, with switchable speech-to-text and text-to-speech provid
 Hold a button, speak, see the live transcript, hear Claude's streamed reply — and swap the
 STT/TTS vendor by configuration instead of rewriting code.
 
-**Status: Phase 2 (speech in).** Hold a button (or Space), speak, watch the live transcript,
-and Claude's reply streams back as text. Two speech-to-text providers are switchable in the UI:
-the free Web Speech API and Deepgram Nova-3. Spoken replies arrive in Phase 3. The design and
-the phase plan live in [`docs/plan.md`](docs/plan.md); the vendor research behind it is in
+**Status: Phase 3 (full voice loop).** Hold a button (or Space), speak, watch the live
+transcript, and Claude's reply streams back as text and is spoken aloud sentence by sentence.
+Speech-to-text and text-to-speech providers are switchable in the UI: the free browser Web Speech
+APIs or Deepgram (Nova-3 in, Aura-2 out). The design and the phase plan live in
+[`docs/plan.md`](docs/plan.md); the vendor research behind it is in
 [`docs/research-2026-10-15.md`](docs/research-2026-10-15.md).
 
 ## Packages
@@ -40,6 +41,15 @@ Speech-to-text providers:
 |---|---|---|
 | Web Speech API | nothing | Chrome, Edge, Safari. Chrome sends the audio to Google's servers; Firefox ships it disabled |
 | Deepgram Nova-3 | `DEEPGRAM_API_KEY` in `.env` | The browser streams audio straight to Deepgram with a 60-second token minted by the server; your key never reaches the page |
+
+Text-to-speech providers (or **Off** for text-only replies):
+
+| Provider | Needs | Notes |
+|---|---|---|
+| Web Speech synthesis | nothing | OS voices; quality varies by platform |
+| Deepgram Aura-2 | `DEEPGRAM_API_KEY` in `.env` | Same token flow as Nova-3; raw PCM streamed to the browser and played gaplessly |
+
+Press to talk or send text while a reply is being spoken to interrupt it; `Stop` cuts it off.
 
 ```
 pnpm check        # typecheck + lint + test + build

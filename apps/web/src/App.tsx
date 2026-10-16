@@ -1,5 +1,6 @@
-import type { ProvidersInfo, SttProvider } from "@voice-chat-kit/core";
+import type { ProvidersInfo, SttProvider, TtsProvider } from "@voice-chat-kit/core";
 import { deepgramStt, webSpeechStt } from "@voice-chat-kit/providers/stt";
+import { deepgramTts, webSpeechTts } from "@voice-chat-kit/providers/tts";
 import { useVoiceChat } from "@voice-chat-kit/react";
 import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { usePointerHold } from "./usePointerHold.js";
@@ -32,10 +33,16 @@ const styles = {
   muted: { color: "#6b7280", fontSize: 14 },
 } as const;
 
+const PROVIDER_LABELS: Record<string, string> = {
+  "web-speech": "Web Speech API (free, browser)",
+  deepgram: "Deepgram",
+};
+
 export function App() {
   const [providers, setProviders] = useState<ProvidersInfo | null>(null);
   const [draft, setDraft] = useState("");
   const [sttId, setSttId] = useState("");
+  const [ttsId, setTtsId] = useState<string | null>(null); // null = first available
 
   useEffect(() => {
     fetch("/api/providers")
@@ -46,19 +53,34 @@ export function App() {
 
   // Offer only what works here: Web Speech when the browser has it, Deepgram when the server
   // can mint its tokens.
+  const hasDeepgram = providers?.tokenIssuers.includes("deepgram") ?? false;
   const sttChoices = useMemo(() => {
     const list: SttProvider[] = [];
     const web = webSpeechStt();
     if (web.isSupported?.() ?? true) list.push(web);
-    if (providers?.tokenIssuers.includes("deepgram")) list.push(deepgramStt());
+    if (hasDeepgram) list.push(deepgramStt());
     return list;
-  }, [providers]);
+  }, [hasDeepgram]);
+  const ttsChoices = useMemo(() => {
+    const list: TtsProvider[] = [];
+    const web = webSpeechTts();
+    if (web.isSupported?.() ?? true) list.push(web);
+    if (hasDeepgram) list.push(deepgramTts());
+    return list;
+  }, [hasDeepgram]);
   const stt = sttChoices.find((p) => p.id === sttId) ?? sttChoices[0];
+  const tts =
+    ttsId === "off" ? undefined : (ttsChoices.find((p) => p.id === ttsId) ?? ttsChoices[0]);
 
-  const chat = useVoiceChat({ baseUrl: "/api", ...(stt ? { stt } : {}) });
+  const chat = useVoiceChat({
+    baseUrl: "/api",
+    ...(stt ? { stt } : {}),
+    ...(tts ? { tts } : {}),
+  });
   const { startListening, stopListening } = chat;
   const busy = chat.state !== "idle" && chat.state !== "error";
   const listening = chat.state === "listening";
+  const speaking = chat.state === "speaking";
 
   // Hold Space to talk (on the page or the PTT button); losing focus cancels instead of sending.
   usePushToTalkKey({
@@ -81,7 +103,7 @@ export function App() {
     <main style={styles.main}>
       <h1>voice-chat-kit demo</h1>
       <p style={styles.muted}>
-        Phase 2: push-to-talk with Claude. State: <strong>{chat.state}</strong>
+        Phase 3: full voice loop with Claude. State: <strong>{chat.state}</strong>
         {chat.usage
           ? ` · last turn ${chat.usage.inputTokens} in / ${chat.usage.outputTokens} out`
           : ""}
@@ -98,14 +120,28 @@ export function App() {
           {sttChoices.length === 0 ? <option value="">none available</option> : null}
           {sttChoices.map((p) => (
             <option key={p.id} value={p.id}>
-              {p.id === "web-speech" ? "Web Speech API (free, browser)" : "Deepgram Nova-3"}
+              {p.id === "deepgram" ? "Deepgram Nova-3" : PROVIDER_LABELS[p.id]}
             </option>
           ))}
         </select>
-        {stt?.id === "web-speech" ? (
-          <span style={styles.muted}>Chrome sends this audio to Google's servers.</span>
-        ) : null}
+        <label htmlFor="tts">Text-to-speech</label>
+        <select
+          id="tts"
+          value={tts?.id ?? "off"}
+          onChange={(e) => setTtsId(e.target.value)}
+          disabled={busy}
+        >
+          <option value="off">Off (text only)</option>
+          {ttsChoices.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.id === "deepgram" ? "Deepgram Aura-2" : PROVIDER_LABELS[p.id]}
+            </option>
+          ))}
+        </select>
       </div>
+      {stt?.id === "web-speech" ? (
+        <p style={styles.muted}>Chrome sends Web Speech audio to Google's servers.</p>
+      ) : null}
 
       <section style={styles.log} aria-live="polite">
         {chat.messages.map((m) => (
@@ -120,6 +156,7 @@ export function App() {
       <p style={styles.interim} aria-live="polite">
         {listening ? chat.interimTranscript || "Listening…" : ""}
         {chat.state === "transcribing" ? "Finishing transcript…" : ""}
+        {speaking ? "Speaking… (press to talk or Stop to interrupt)" : ""}
       </p>
 
       {chat.lastRefusal ? (
@@ -146,7 +183,7 @@ export function App() {
           type="button"
           data-ptt="true"
           style={{ ...styles.ptt, ...(listening ? styles.pttActive : {}) }}
-          disabled={!stt || (busy && !listening)}
+          disabled={!stt || (busy && !listening && !speaking)}
           {...pointerHold}
           aria-pressed={listening}
         >
@@ -166,10 +203,10 @@ export function App() {
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           placeholder="…or type a message"
-          disabled={busy}
+          disabled={busy && !speaking}
           aria-label="Message"
         />
-        <button type="submit" disabled={busy || !draft.trim()}>
+        <button type="submit" disabled={(busy && !speaking) || !draft.trim()}>
           Send
         </button>
       </form>

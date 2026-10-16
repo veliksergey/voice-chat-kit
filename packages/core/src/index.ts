@@ -8,6 +8,7 @@ export {
   type HistoryWindowOptions,
   historyByteLength,
 } from "./history.js";
+export { createSentenceStream, type SentenceStream } from "./sentence-stream.js";
 export {
   canTransition,
   InvalidTransitionError,

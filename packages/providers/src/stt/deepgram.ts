@@ -169,7 +169,7 @@ export function deepgramStt(options: DeepgramSttOptions = {}): SttProvider {
 
       let token: string;
       try {
-        token = (await start.getToken()).token;
+        token = (await start.getToken(start.signal)).token;
       } catch (error) {
         teardown();
         throw error;

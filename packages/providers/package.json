@@ -44,5 +44,11 @@
   },
   "engines": {
     "node": ">=22.18"
+  },
+  "devDependencies": {
+    "@voice-chat-kit/core": "workspace:*"
+  },
+  "peerDependencies": {
+    "@voice-chat-kit/core": "workspace:*"
   }
 }

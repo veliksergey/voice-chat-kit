@@ -2,7 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { createVoiceChatHandlers, PACKAGE_NAME } from "@voice-chat-kit/server";
 import { expect, it } from "vitest";
 import { createApp } from "./app.js";
-import { DEFAULT_SYSTEM_PROMPT, loadConfig } from "./config.js";
+import { createHandlersFromConfig, DEFAULT_SYSTEM_PROMPT, loadConfig } from "./config.js";
 
 const ORIGIN = "http://localhost:5173";
 
@@ -116,6 +116,46 @@ it("loads configuration from the environment and validates effort", () => {
   // Loopback unless HOST is set explicitly.
   expect(loadConfig({}).host).toBe("127.0.0.1");
   expect(loadConfig({ HOST: "0.0.0.0" }).host).toBe("0.0.0.0");
+});
+
+it("registers the Deepgram token issuer only when DEEPGRAM_API_KEY is set", async () => {
+  const client = new Anthropic({
+    apiKey: "unused",
+    maxRetries: 0,
+    fetch: () => {
+      throw new Error("Claude must not be called");
+    },
+  });
+  const grantCalls: string[] = [];
+  const grantFetch: typeof globalThis.fetch = async (input, init) => {
+    grantCalls.push(
+      `${init?.method} ${String(input)} ${new Headers(init?.headers).get("authorization")}`,
+    );
+    return new Response(JSON.stringify({ access_token: "jwt.test", expires_in: 60 }), {
+      status: 200,
+    });
+  };
+
+  const without = createApp(
+    createHandlersFromConfig(loadConfig({}), { anthropicClient: client, fetch: grantFetch }),
+    { corsOrigin: ORIGIN },
+  );
+  expect(await (await without.request("/api/providers")).json()).toEqual({ tokenIssuers: [] });
+  expect((await without.request("/api/token/deepgram", { method: "POST" })).status).toBe(404);
+
+  const config = loadConfig({ DEEPGRAM_API_KEY: "dg-key" });
+  expect(config.deepgramApiKey).toBe("dg-key");
+  const withKey = createApp(
+    createHandlersFromConfig(config, { anthropicClient: client, fetch: grantFetch }),
+    { corsOrigin: ORIGIN },
+  );
+  expect(await (await withKey.request("/api/providers")).json()).toEqual({
+    tokenIssuers: ["deepgram"],
+  });
+  const token = await withKey.request("/api/token/deepgram", { method: "POST" });
+  expect(token.status).toBe(200);
+  expect(await token.json()).toMatchObject({ token: "jwt.test" });
+  expect(grantCalls).toEqual(["POST https://api.deepgram.com/v1/auth/grant Token dg-key"]);
 });
 
 it("treats blank template values as unset", () => {

@@ -9,8 +9,9 @@ A pnpm monorepo for voice chat with Claude where speech-to-text (STT) and text-t
 providers are swapped by configuration. Design, decisions, phases, and acceptance criteria:
 `docs/plan.md`. Vendor research with dated sources: `docs/research-2026-10-15.md`.
 
-Current phase: **1 — core + text chat**. Typed text streams a Claude reply end to end; the
-`providers` package is still a placeholder (speech arrives in Phases 2–3).
+Current phase: **2 — speech-to-text**. Push-to-talk with Web Speech API or Deepgram Nova-3
+streams a live transcript, then Claude's reply; text input still works. Text-to-speech arrives
+in Phase 3 (`./tts` is still a placeholder).
 
 ## Layout
 
@@ -18,7 +19,7 @@ Current phase: **1 — core + text chat**. Typed text streams a Claude reply end
 apps/web            @voice-chat-kit/web-demo     Vite 8 + React 19 demo (private); /api proxied to :3000
 apps/server         @voice-chat-kit/server-demo  Hono app on @hono/node-server (private); config.ts reads env
 packages/core       @voice-chat-kit/core         types, session machine, chunker, SSE parser, history window (publishable)
-packages/providers  @voice-chat-kit/providers    subpath exports ./stt and ./tts (publishable, placeholder)
+packages/providers  @voice-chat-kit/providers    ./stt: webSpeechStt, deepgramStt; ./tts: placeholder (publishable)
 packages/react      @voice-chat-kit/react        useVoiceChat (publishable)
 packages/server     @voice-chat-kit/server       createVoiceChatHandlers: validate, Claude stream, tokens (publishable)
 docs/               plan, research, reviews/decisions.md
@@ -40,6 +41,36 @@ docs/               plan, research, reviews/decisions.md
   supplies `system`, `model`, `effort`, `max_tokens` from its own config only.
 - A terminal refusal removes the refused turn (user + partial reply) from replay history; a
   fallback-rescued decline continues the same stream.
+
+## Speech-to-text (Phase 2)
+
+- Adapters implement `SttProvider` from core and live in `packages/providers/src/stt/`. Adding a
+  vendor = a new adapter file + (for browser-token vendors) a `TokenIssuer` in `packages/server`.
+- `webSpeechStt()`: browser `SpeechRecognition` (prefixed or not); free; `isSupported()` is false
+  where the API is missing (Firefox by default). Chrome sends the audio to Google's servers — the
+  demo says so next to the selector.
+- `deepgramStt()`: the browser opens `wss://api.deepgram.com/v1/listen?model=nova-3&interim_results=true&smart_format=true`
+  itself with a 60 s JWT minted by `POST /api/token/deepgram` (`deepgramTokenIssuer` →
+  Deepgram `POST /v1/auth/grant`, `Authorization: Token <key>`; the key never leaves the server).
+  The JWT travels only as the WebSocket subprotocol `["bearer", <jwt>]` — the form the official
+  `@deepgram/sdk` 5.15 browser build uses (`protocols.push("bearer", token)`) — never in the URL.
+  Audio is `MediaRecorder` output (webm/opus where supported) sent as binary frames with no
+  `encoding`/`sample_rate` params: Deepgram's docs say to omit them for containerized audio.
+  `stop()` sends `{"type":"CloseStream"}` and waits (bounded) for the final `Results`.
+- No `@deepgram/sdk` dependency anywhere; both halves use the documented wire protocol.
+- Hook flow (`useVoiceChat`): `startListening` (`idle -> listening`, token fetched first when
+  `needsToken`), interim text in `interimTranscript`, `stopListening`
+  (`listening -> transcribing -> thinking`) sends the final transcript through the same chat
+  path as typed text; an empty transcript returns to `idle`; `stop()`/unmount abort the session.
+- Demo keyboard rule (`apps/web/src/usePushToTalkKey.ts`): Space holds to talk only when focus is
+  on the page or the PTT button (`data-ptt`), so other controls keep native Space; losing window
+  focus or tab visibility while recording cancels via `stop()` instead of sending.
+- Any Deepgram socket close before `stop()` — even a clean 1000 — is a failure (audio would be
+  discarded silently otherwise); recorder `error` events and construction failures tear down too.
+- Web Speech ends recognition by itself (silence timeouts); `webSpeechStt` restarts it while the
+  session is held (never after a reported error) and accumulates finals across runs.
+- Pointer hold-to-talk (`apps/web/src/usePointerHold.ts`): `pointerup`/`leave`/`cancel` act only on
+  a press the pointer started, so they cannot end a Space-held recording.
 
 ## Toolchain
 

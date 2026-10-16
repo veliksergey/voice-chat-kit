@@ -1,2 +1,2 @@
-// Phase 0 placeholder for the ./stt subpath. Web Speech and Deepgram adapters arrive in Phase 2.
-export const SUBPATH = "@voice-chat-kit/providers/stt";
+export { type DeepgramSttOptions, deepgramStt } from "./deepgram.js";
+export { type WebSpeechSttOptions, webSpeechStt } from "./web-speech.js";

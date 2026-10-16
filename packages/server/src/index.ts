@@ -6,6 +6,7 @@ export {
   type Effort,
   streamClaudeChat,
 } from "./claude.js";
+export { type DeepgramTokenIssuerOptions, deepgramTokenIssuer } from "./deepgram.js";
 export {
   createVoiceChatHandlers,
   healthHandler,

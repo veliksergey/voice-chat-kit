@@ -1,4 +1,11 @@
-import type { Effort } from "@voice-chat-kit/server";
+import type Anthropic from "@anthropic-ai/sdk";
+import {
+  createVoiceChatHandlers,
+  deepgramTokenIssuer,
+  type Effort,
+  type TokenIssuer,
+  type VoiceChatHandlers,
+} from "@voice-chat-kit/server";
 
 export interface ServerConfig {
   /** Bind address; loopback by default so the credential-backed endpoint is not reachable from the LAN. */
@@ -7,6 +14,8 @@ export interface ServerConfig {
   corsOrigin: string;
   anthropic: { apiKey?: string; model?: string; effort?: Effort; maxTokens?: number };
   system: string;
+  /** Present only when DEEPGRAM_API_KEY is set; enables the `deepgram` token issuer. */
+  deepgramApiKey?: string;
 }
 
 const EFFORTS: ReadonlySet<string> = new Set(["low", "medium", "high", "xhigh", "max"]);
@@ -36,11 +45,41 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     anthropic.maxTokens = n;
   }
   // `||` not `??`: the .env.example template leaves optional values blank, and blank means unset.
-  return {
+  const config: ServerConfig = {
     host: env.HOST || "127.0.0.1",
     port: Number(env.PORT || 3000),
     corsOrigin: env.CORS_ORIGIN || "http://localhost:5173",
     anthropic,
     system: env.VOICE_CHAT_SYSTEM_PROMPT || DEFAULT_SYSTEM_PROMPT,
   };
+  if (env.DEEPGRAM_API_KEY) config.deepgramApiKey = env.DEEPGRAM_API_KEY;
+  return config;
+}
+
+export interface HandlerOverrides {
+  /** Injected Anthropic client (tests). */
+  anthropicClient?: Anthropic;
+  /** `fetch` used by token issuers (tests). */
+  fetch?: typeof globalThis.fetch;
+}
+
+/** Builds the handlers from config: Claude settings plus the token issuers the keys enable. */
+export function createHandlersFromConfig(
+  config: ServerConfig,
+  overrides: HandlerOverrides = {},
+): VoiceChatHandlers {
+  const tokenIssuers: TokenIssuer[] = [];
+  if (config.deepgramApiKey) {
+    const issuerOptions: Parameters<typeof deepgramTokenIssuer>[0] = {
+      apiKey: config.deepgramApiKey,
+      ttlSeconds: 60,
+    };
+    if (overrides.fetch) issuerOptions.fetch = overrides.fetch;
+    tokenIssuers.push(deepgramTokenIssuer(issuerOptions));
+  }
+  const anthropic: NonNullable<Parameters<typeof createVoiceChatHandlers>[0]["anthropic"]> = {
+    ...config.anthropic,
+  };
+  if (overrides.anthropicClient) anthropic.client = overrides.anthropicClient;
+  return createVoiceChatHandlers({ anthropic, system: config.system, tokenIssuers });
 }

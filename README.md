@@ -4,9 +4,10 @@ Voice chat with Claude, with switchable speech-to-text and text-to-speech provid
 Hold a button, speak, see the live transcript, hear Claude's streamed reply — and swap the
 STT/TTS vendor by configuration instead of rewriting code.
 
-**Status: Phase 1 (text chat end to end).** Typed text streams a Claude reply in the browser,
-with refusal and error handling; voice arrives in Phases 2–3. The design and the phase plan live
-in [`docs/plan.md`](docs/plan.md); the vendor research behind it is in
+**Status: Phase 2 (speech in).** Hold a button (or Space), speak, watch the live transcript,
+and Claude's reply streams back as text. Two speech-to-text providers are switchable in the UI:
+the free Web Speech API and Deepgram Nova-3. Spoken replies arrive in Phase 3. The design and
+the phase plan live in [`docs/plan.md`](docs/plan.md); the vendor research behind it is in
 [`docs/research-2026-10-15.md`](docs/research-2026-10-15.md).
 
 ## Packages
@@ -30,7 +31,15 @@ cp .env.example .env     # set ANTHROPIC_API_KEY (or sign in with `ant auth logi
 pnpm dev                 # apps/server on :3000, Vite on :5173 (proxies /api)
 ```
 
-Open http://localhost:5173, type a message, and watch the reply stream. `Stop` aborts a turn.
+Open http://localhost:5173. Hold **Hold to talk** (or hold Space) and speak; release to send.
+Or type a message. `Stop` aborts a turn; `New conversation` clears the transcript.
+
+Speech-to-text providers:
+
+| Provider | Needs | Notes |
+|---|---|---|
+| Web Speech API | nothing | Chrome, Edge, Safari. Chrome sends the audio to Google's servers; Firefox ships it disabled |
+| Deepgram Nova-3 | `DEEPGRAM_API_KEY` in `.env` | The browser streams audio straight to Deepgram with a 60-second token minted by the server; your key never reaches the page |
 
 ```
 pnpm check        # typecheck + lint + test + build
